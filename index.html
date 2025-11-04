@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Coord Magnet</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- XLSX (SheetJS) for Excel file reading -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    
+    <!-- Firebase SDKs (Add your configuration in the script below) -->
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Inter', 'Cairo', 'sans-serif';
+            background-color: #f8fafc; /* slate-50 */
+        }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="module">
+        import React from 'react';
+        import ReactDOM from 'react-dom/client';
+
+        // A shorthand for React.createElement to make the code more readable
+        const e = React.createElement;
+
+        // --- Firebase Configuration ---
+        // IMPORTANT: Replace the placeholder values below with your actual Firebase project configuration.
+        const firebaseConfig = {
+            apiKey: "AIzaSyALovL9SKUH2lCgBjHytTvVsBVzAKcfGgs",
+            authDomain: "new-app-6b6c5.firebaseapp.com",
+            databaseURL: "https://new-app-6b6c5-default-rtdb.firebaseio.com",
+            projectId: "new-app-6b6c5",
+            storageBucket: "new-app-6b6c5.firebasestorage.app",
+            messagingSenderId: "458991978058",
+            appId: "1:458991978058:web:a6254cc72df7c87e0988b3",
+        };
+        
+        // Initialize Firebase if the config is not just placeholders
+        if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
+            window.firebase.initializeApp(firebaseConfig);
+        }
+
+        // =====================================================================================
+        // --- services/conversion.ts ---
+        // =====================================================================================
+        function wgs84ToUtm(lat, lon) {
+            const a = 6378137.0;
+            const e_val = 0.0818191908426;
+            const k0 = 0.9996;
+            const zone = Math.floor((lon + 180) / 6) + 1;
+            const lonOrigin = (zone - 1) * 6 - 180 + 3;
+            const falseEasting = 500000;
+            const falseNorthing = lat < 0 ? 10000000 : 0;
+            const latRad = lat * Math.PI / 180;
+            const lonRad = lon * Math.PI / 180;
+            const lonOriginRad = lonOrigin * Math.PI / 180;
+            const e2 = e_val * e_val;
+            const e4 = e2 * e2;
+            const e6 = e4 * e2;
+            const ep2 = e2 / (1 - e2);
+            const N = a / Math.sqrt(1 - e2 * Math.sin(latRad) * Math.sin(latRad));
+            const T = Math.tan(latRad) * Math.tan(latRad);
+            const C = ep2 * Math.cos(latRad) * Math.cos(latRad);
+            const A = (lonRad - lonOriginRad) * Math.cos(latRad);
+            const M = a * ((1 - e2 / 4 - 3 * e4 / 64 - 5 * e6 / 256) * latRad - (3 * e2 / 8 + 3 * e4 / 32 + 45 * e6 / 1024) * Math.sin(2 * latRad) + (15 * e4 / 256 + 45 * e6 / 1024) * Math.sin(4 * latRad) - (35 * e6 / 3072) * Math.sin(6 * latRad));
+            const x = k0 * N * (A + (1 - T + C) * A * A * A / 6 + (5 - 18 * T + T * T + 72 * C - 58 * ep2) * A * A * A * A * A / 120) + falseEasting;
+            const y = k0 * (M + N * Math.tan(latRad) * (A * A / 2 + (5 - T + 9 * C + 4 * C * C) * A * A * A * A / 24 + (61 - 58 * T + T * T + 600 * C - 330 * ep2) * A * A * A * A * A * A / 720)) + falseNorthing;
+            return { x: x.toFixed(4), y: y.toFixed(4) };
+        }
+
+        function extractCoordinates(url) {
+            const patterns = [/@(-?\d+\.\d+),(-?\d+\.\d+)/, /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/, /ll=(-?\d+\.\d+),(-?\d+\.\d+)/, /maps\?q=(-?\d+\.\d+),(-?\d+\.\d+)/];
+            for (const pattern of patterns) {
+                const match = url.match(pattern);
+                if (match) {
+                    return { lat: parseFloat(match[1]), lon: parseFloat(match[2]) };
+                }
+            }
+            return null;
+        }
+        
+        // =====================================================================================
+        // --- components/Alert.tsx ---
+        // =====================================================================================
+        const Alert = ({ message, type }) => {
+            const baseClasses = 'p-4 rounded-md shadow-lg flex items-center';
+            const typeClasses = {
+                success: 'bg-emerald-100 border-l-4 border-emerald-500 text-emerald-800',
+                error: 'bg-rose-100 border-l-4 border-rose-500 text-rose-800',
+            };
+            const icon = {
+                success: e('svg', { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6 mr-3", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" }, e('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" })),
+                error: e('svg', { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6 mr-3", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor" }, e('path', { strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" })),
+            };
+            return e('div', { className: `${baseClasses} ${typeClasses[type]}`, role: "alert" }, icon[type], e('p', { className: "font-semibold" }, message));
+        };
+
+        // =====================================================================================
+        // --- components/EmptyState.tsx ---
+        // =====================================================================================
+        const EmptyState = ({ message }) => {
+            return e('div', { className: "text-center py-16 px-6" },
+                e('svg', { className: "mx-auto h-12 w-12 text-gray-400", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", "aria-hidden": "true" },
+                    e('path', { vectorEffect: "non-scaling-stroke", strokeLinecap: "round", strokeLinejoin: "round", strokeWidth: 2, d: "M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" })
+                ),
+                e('h3', { className: "mt-2 text-sm font-medium text-gray-900" }, "لا توجد بيانات"),
+                e('p', { className: "mt-1 text-sm text-gray-500" }, message)
+            );
+        };
+
+        // =====================================================================================
+        // --- components/Header.tsx ---
+        // =====================================================================================
+        const Header = ({ title, recordCount, goBack }) => {
+            return e('header', { className: "bg-white shadow-sm sticky top-0 z-40 border-b border-slate-200" },
+                e('div', { className: "container mx-auto px-4 md:px-6 py-3 flex justify-between items-center" },
+                    e('div', { className: "flex items-center gap-4" },
+                        goBack && e('button', { onClick: goBack, className: "text-slate-500 hover:text-slate-700 p-2 rounded-full hover:bg-slate-100 transition-colors", "aria-label": "Go back" },
+                            e('svg', { xmlns: "http://www.w3.org/2000/svg", className: "h-6 w-6", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: 2 },
+                                e('path', { strokeLinecap: "round", strokeLinejoin: "round", d: "M9 5l7 7-7 7" })
+                            )
+                        ),
+                        e('h1', { className: "text-2xl font-bold text-slate-800" }, title)
+                    ),
+                    e('div', { className: "bg-indigo-100 text-indigo-800 text-sm font-semibold px-4 py-2 rounded-full" }, `📊 عدد السجلات: ${recordCount}`)
+                )
+            );
+        };
+        
+        // =====================================================================================
+        // --- components/LandingPage.tsx ---
+        // =====================================================================================
+        const LandingPage = ({ onNavigate }) => {
+            return e('div', { className: "flex items-center justify-center min-h-screen" },
+                e('div', { className: "text-center p-8 bg-white shadow-xl rounded-2xl max-w-4xl mx-auto" },
+                    e('h1', { className: "text-4xl font-bold text-slate-800 mb-2" }, "🧲 Coord Magnet"),
+                    e('p', { className: "text-sm text-slate-400 mb-6 italic" }, "بوابتك لنظام إحداثيات متكامل"),
+                    e('p', { className: "text-lg text-slate-500 mb-8" }, "اختر طريقة إدخال البيانات التي تناسب احتياجك"),
+                    e('div', { className: "mt-8 grid grid-cols-1 md:grid-cols-2 gap-8" },
+                        e('div', { className: "p-8 border border-slate-200 rounded-lg hover:shadow-lg hover:border-emerald-500 transition-all duration-300 cursor-pointer", onClick: () => onNavigate('data-entry') },
+                            e('h2', { className: "text-2xl font-semibold text-emerald-600" }, "إدخال بيانات حسب المحافظة"),
+                            e('p', { className: "mt-2 text-slate-500" }, "ارفع ملف إكسل مرجعي وأضف إحداثيات جديدة.")
+                        ),
+                        e('div', { className: "p-8 border border-slate-200 rounded-lg hover:shadow-lg hover:border-sky-500 transition-all duration-300 cursor-pointer", onClick: () => onNavigate('fast-conversion') },
+                            e('h2', { className: "text-2xl font-semibold text-sky-600" }, "التحويل السريع والمباشر"),
+                            e('p', { className: "mt-2 text-slate-500" }, "أضف سجلات فردية مباشرة إلى قاعدة البيانات.")
+                        )
+                    )
+                )
+            );
+        };
+        
+        // =====================================================================================
+        // --- components/FastConversionPage.tsx ---
+        // =====================================================================================
+        const FastConversionPage = ({ goBack }) => {
+            const { useState, useEffect } = React;
+            const [records, setRecords] = useState([]);
+            const [entityName, setEntityName] = useState('');
+            const [crn, setCrn] = useState('');
+            const [googleLink, setGoogleLink] = useState('');
+            const [comment, setComment] = useState('');
+            const [quickResult, setQuickResult] = useState(null);
+            const [editingId, setEditingId] = useState(null);
+            const [alert, setAlert] = useState(null);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [isFirebaseReady, setIsFirebaseReady] = useState(false);
+
+            useEffect(() => {
+                if (window.firebase && window.firebase.database) {
+                     setIsFirebaseReady(true);
+                }
+            }, []);
+
+            useEffect(() => {
+                if (!isFirebaseReady) return;
+                const { database, ref, onValue } = window.firebase;
+                const recordsRef = ref(database, 'records/');
+                const unsubscribe = onValue(recordsRef, (snapshot) => {
+                    const data = snapshot.val();
+                    const loadedRecords = [];
+                    if (data) {
+                        for (const key in data) {
+                            loadedRecords.push({ id: key, ...data[key] });
+                        }
+                    }
+                    setRecords(loadedRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+                });
+                return () => unsubscribe();
+            }, [isFirebaseReady]);
+
+            const showAlert = (message, type) => {
+                setAlert({ message, type });
+                setTimeout(() => setAlert(null), 3000);
+            };
+
+            const handlePaste = (e) => {
+                const pastedText = e.clipboardData.getData('text');
+                const coords = extractCoordinates(pastedText);
+                if (coords) {
+                    const utm = wgs84ToUtm(coords.lat, coords.lon);
+                    setQuickResult(utm);
+                }
+            };
+            
+            const resetForm = () => {
+                setEntityName(''); setCrn(''); setGoogleLink(''); setComment(''); setQuickResult(null); setEditingId(null);
+            };
+
+            const handleSubmit = async (event) => {
+                event.preventDefault();
+                if (!isFirebaseReady) { showAlert('خدمة قاعدة البيانات غير مهيأة. يرجى مراجعة الإعدادات.', 'error'); return; }
+                const coords = extractCoordinates(googleLink);
+                if (!coords) { showAlert('رابط Google Maps غير صحيح أو غير مدعوم', 'error'); return; }
+                const utm = wgs84ToUtm(coords.lat, coords.lon);
+                const { database, ref, push, set } = window.firebase;
+                if (editingId) {
+                    const recordToUpdate = records.find(r => r.id === editingId);
+                    if (!recordToUpdate) return;
+                    const updatedRecord = { ...recordToUpdate, entityName, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, updated: new Date().toLocaleString('ar-EG') };
+                    await set(ref(database, `records/${editingId}`), updatedRecord);
+                    showAlert('تم تحديث السجل بنجاح', 'success');
+                } else {
+                    const newRecord = { entityName, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, timestamp: new Date().toLocaleString('ar-EG') };
+                    await push(ref(database, 'records'), newRecord);
+                    showAlert('تمت إضافة السجل بنجاح', 'success');
+                }
+                resetForm();
+            };
+
+            const handleEdit = (record) => {
+                setEditingId(record.id); setEntityName(record.entityName); setCrn(record.crn); setGoogleLink(`https://www.google.com/maps?q=${record.lat},${record.lon}`); setComment(record.comment); setQuickResult({ x: record.x, y: record.y }); window.scrollTo(0, 0);
+            };
+
+            const handleDelete = async (id) => {
+                if (window.confirm('هل أنت متأكد من حذف هذا السجل؟')) {
+                    const { database, ref, remove } = window.firebase;
+                    await remove(ref(database, `records/${id}`));
+                    showAlert('تم حذف السجل', 'success');
+                }
+            };
+
+            const handleClearAll = async () => {
+                if (window.confirm('تحذير: سيتم حذف جميع السجلات بشكل نهائي. هل أنت متأكد؟')) {
+                    const { database, ref, set } = window.firebase;
+                    await set(ref(database, 'records'), null);
+                    showAlert('تم حذف جميع السجلات', 'success');
+                }
+            };
+
+            const exportToExcel = () => {
+                if (records.length === 0) { showAlert('لا توجد بيانات لتصديرها', 'error'); return; }
+                const data = records.map(r => ({ 'اسم الجهة': r.entityName, 'CRN': r.crn, 'X': r.x, 'Y': r.y, 'Latitude': r.lat, 'Longitude': r.lon, 'ملاحظات': r.comment || '', 'تاريخ الإنشاء': r.timestamp, 'تاريخ التحديث': r.updated || '' }));
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Coordinates");
+                XLSX.writeFile(wb, `utm_coordinates_${new Date().toISOString().split('T')[0]}.xlsx`);
+                showAlert('تم تصدير الملف بنجاح', 'success');
+            };
+
+            const filteredRecords = records.filter(record =>
+                record.entityName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                record.crn.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (record.comment && record.comment.toLowerCase().includes(searchTerm.toLowerCase()))
+            );
+
+            const formPanel = e('div', { className: "lg:col-span-1 bg-white p-6 rounded-lg shadow-md h-fit sticky top-24" },
+                e('form', { onSubmit: handleSubmit },
+                    e('h2', { className: "text-xl font-semibold mb-4 border-b pb-2 text-slate-700" }, "إضافة أو تعديل سجل"),
+                    e('div', { className: "space-y-4" },
+                        e('div', null, e('label', { htmlFor: "entityName", className: "block text-sm font-medium text-slate-700 mb-1" }, "اسم الجهة *"), e('input', { type: "text", id: "entityName", value: entityName, onChange: (ev) => setEntityName(ev.target.value), className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", required: true })),
+                        e('div', null, e('label', { htmlFor: "crn", className: "block text-sm font-medium text-slate-700 mb-1" }, "CRN *"), e('input', { type: "text", id: "crn", value: crn, onChange: (ev) => setCrn(ev.target.value), className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", required: true })),
+                        e('div', null, e('label', { htmlFor: "googleLink", className: "block text-sm font-medium text-slate-700 mb-1" }, "رابط Google Maps *"), e('textarea', { id: "googleLink", value: googleLink, onChange: (ev) => setGoogleLink(ev.target.value), onPaste: handlePaste, rows: 3, className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", placeholder: "الصق الرابط هنا...", required: true }), e('p', { className: "text-xs text-slate-500 mt-1" }, "يتم التحويل التلقائي عند لصق الرابط.")),
+                        e('div', null, e('label', { htmlFor: "comment", className: "block text-sm font-medium text-slate-700 mb-1" }, "ملاحظات"), e('textarea', { id: "comment", value: comment, onChange: (ev) => setComment(ev.target.value), rows: 2, className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", placeholder: "اختياري..." })),
+                        quickResult && e('div', { className: "p-3 bg-indigo-50 border-l-4 border-indigo-400 text-indigo-800 rounded-md" }, e('p', { className: "font-semibold" }, "✓ تم التحويل:"), e('p', { className: "font-mono text-sm" }, `X = ${quickResult.x}`), e('p', { className: "font-mono text-sm" }, `Y = ${quickResult.y}`))
+                    ),
+                    e('div', { className: "mt-6 space-y-2" },
+                        e('button', { type: "submit", className: "w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" }, editingId ? '💾 تحديث السجل' : '✅ إضافة السجل'),
+                        editingId && e('button', { type: "button", onClick: resetForm, className: "w-full bg-slate-500 text-white font-bold py-2 px-4 rounded-md hover:bg-slate-600 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500" }, "إلغاء التعديل"),
+                        e('button', { type: "button", onClick: exportToExcel, className: "w-full bg-emerald-600 text-white font-bold py-2 px-4 rounded-md hover:bg-emerald-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500" }, "📥 تصدير إلى Excel"),
+                        e('button', { type: "button", onClick: handleClearAll, className: "w-full bg-rose-600 text-white font-bold py-2 px-4 rounded-md hover:bg-rose-700 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500" }, "🗑️ مسح الكل")
+                    )
+                )
+            );
+
+            const tablePanel = e('div', { className: "lg:col-span-2 bg-white p-6 rounded-lg shadow-md" },
+                e('div', { className: "flex justify-between items-center mb-4" },
+                    e('h2', { className: "text-xl font-semibold text-slate-700" }, "قائمة السجلات"),
+                    e('input', { type: "text", placeholder: "بحث سريع...", value: searchTerm, onChange: (ev) => setSearchTerm(ev.target.value), className: "w-1/2 p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white" })
+                ),
+                e('div', { className: "overflow-x-auto" },
+                    !isFirebaseReady ? e(EmptyState, { message: "يتم الآن تهيئة الاتصال بقاعدة البيانات..." }) :
+                    filteredRecords.length > 0 ? e('table', { className: "w-full text-sm text-right text-slate-500" },
+                        e('thead', { className: "text-xs text-slate-700 uppercase bg-slate-100" },
+                            e('tr', null,
+                                e('th', { scope: "col", className: "px-4 py-3" }, "اسم الجهة"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "CRN"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "X"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "Y"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "ملاحظات"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "تاريخ الإنشاء"),
+                                e('th', { scope: "col", className: "px-4 py-3" }, "إجراءات")
+                            )
+                        ),
+                        e('tbody', null, filteredRecords.map(record => e('tr', { key: record.id, className: "bg-white border-b border-slate-200 hover:bg-slate-50" },
+                            e('td', { className: "px-4 py-3 font-medium text-slate-900" }, record.entityName),
+                            e('td', { className: "px-4 py-3" }, record.crn),
+                            e('td', { className: "px-4 py-3 font-mono" }, record.x),
+                            e('td', { className: "px-4 py-3 font-mono" }, record.y),
+                            e('td', { className: "px-4 py-3 truncate max-w-xs", title: record.comment }, record.comment || '-'),
+                            e('td', { className: "px-4 py-3 text-xs" }, record.timestamp),
+                            e('td', { className: "px-4 py-3 flex items-center space-x-2" },
+                                e('button', { onClick: () => handleEdit(record), className: "text-amber-500 hover:text-amber-700 text-lg" }, "✏️"),
+                                e('button', { onClick: () => handleDelete(record.id), className: "text-rose-500 hover:text-rose-700 text-lg" }, "🗑️")
+                            )
+                        )))
+                    ) : e(EmptyState, { message: "لا توجد سجلات لعرضها. أضف سجلاً جديداً للبدء." })
+                )
+            );
+            
+            return e(React.Fragment, null,
+                alert && e('div', { className: "fixed top-5 left-1/2 -translate-x-1/2 z-50" }, e(Alert, { message: alert.message, type: alert.type })),
+                e(Header, { title: "التحويل السريع", recordCount: records.length, goBack: goBack }),
+                e('main', { className: "container mx-auto p-4 md:p-6" },
+                    e('div', { className: "grid grid-cols-1 lg:grid-cols-3 gap-6" },
+                        formPanel,
+                        tablePanel
+                    )
+                )
+            );
+        };
+        
+        // =====================================================================================
+        // --- components/DataEntryPage.tsx ---
+        // =====================================================================================
+        const DataEntryPage = ({ isAdmin, onAdminLogin, onAdminLogout, referenceData, fileName, onFileLoad, goBack }) => {
+            const { useState, useMemo } = React;
+            const [sessionRecords, setSessionRecords] = useState([]);
+            const [editingIndex, setEditingIndex] = useState(null);
+            const [selectedGovernorate, setSelectedGovernorate] = useState('');
+            const [selectedEntity, setSelectedEntity] = useState('');
+            const [crn, setCrn] = useState('');
+            const [googleLink, setGoogleLink] = useState('');
+            const [comment, setComment] = useState('');
+            const [quickResult, setQuickResult] = useState(null);
+            const [alert, setAlert] = useState(null);
+            const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
+            const [passwordInput, setPasswordInput] = useState('');
+
+            const showAlert = (message, type) => {
+                setAlert({ message, type });
+                setTimeout(() => setAlert(null), 3000);
+            };
+
+            const handlePasswordSubmit = (ev) => {
+                ev.preventDefault();
+                if (passwordInput === 'admin@789') {
+                    onAdminLogin();
+                    showAlert('تم تسجيل الدخول كمسؤول بنجاح.', 'success');
+                    setIsPasswordModalOpen(false);
+                    setPasswordInput('');
+                } else {
+                    showAlert('كلمة المرور غير صحيحة.', 'error');
+                    setPasswordInput('');
+                }
+            };
+            
+            const handleFileChange = (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e_reader) => {
+                    try {
+                        const data = new Uint8Array(e_reader.target?.result);
+                        const workbook = XLSX.read(data, { type: 'array' });
+                        const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                        if (json.length > 0 && !('المحافظة' in json[0] && 'اسم الجهة' in json[0] && 'CRN' in json[0])) {
+                            showAlert("الملف المرفوع يجب أن يحتوي على الأعمدة: 'المحافظة', 'اسم الجهة', 'CRN'", 'error');
+                            onFileLoad([], '');
+                            return;
+                        }
+                        onFileLoad(json, file.name);
+                        showAlert(`تم تحميل ${json.length} سجل مرجعي بنجاح.`, 'success');
+                    } catch (error) {
+                        showAlert('حدث خطأ أثناء قراءة الملف. تأكد من أنه ملف إكسل صالح.', 'error');
+                        onFileLoad([], '');
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+                event.target.value = '';
+            };
+
+            const resetForm = () => {
+                setSelectedEntity(''); setCrn(''); setGoogleLink(''); setComment(''); setQuickResult(null); setEditingIndex(null);
+            };
+
+            const handleSubmit = (ev) => {
+                ev.preventDefault();
+                const coords = extractCoordinates(googleLink);
+                if (!coords) { showAlert('رابط Google Maps غير صحيح أو غير مدعوم', 'error'); return; }
+                const utm = wgs84ToUtm(coords.lat, coords.lon);
+                if (editingIndex !== null) {
+                    const updatedRecord = { ...sessionRecords[editingIndex], entityName: selectedEntity, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, updated: new Date().toLocaleString('ar-EG'), governorate: selectedGovernorate };
+                    const updatedRecords = [...sessionRecords];
+                    updatedRecords[editingIndex] = updatedRecord;
+                    setSessionRecords(updatedRecords);
+                    showAlert('تم تحديث السجل بنجاح.', 'success');
+                } else {
+                    const newRecord = { entityName: selectedEntity, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, timestamp: new Date().toLocaleString('ar-EG'), governorate: selectedGovernorate };
+                    setSessionRecords(prev => [newRecord, ...prev]);
+                    showAlert('تمت إضافة السجل بنجاح إلى القائمة الحالية.', 'success');
+                }
+                resetForm();
+            };
+
+            const handleEditSessionRecord = (index) => {
+                const record = sessionRecords[index];
+                setEditingIndex(index); setSelectedGovernorate(record.governorate || ''); setSelectedEntity(record.entityName); setCrn(record.crn); setGoogleLink(`https://www.google.com/maps?q=${record.lat},${record.lon}`); setComment(record.comment); setQuickResult({ x: record.x, y: record.y });
+                document.getElementById('data-entry-form')?.scrollIntoView({ behavior: 'smooth' });
+            };
+
+            const handleDeleteSessionRecord = (index) => {
+                if (window.confirm('هل أنت متأكد من حذف هذا السجل من الجلسة الحالية؟')) {
+                    setSessionRecords(prev => prev.filter((_, i) => i !== index));
+                    showAlert('تم حذف السجل.', 'success');
+                }
+            };
+            
+            const exportMergedToExcel = () => {
+                if (sessionRecords.length === 0 || referenceData.length === 0) { showAlert('لا توجد سجلات جديدة لدمجها أو لم يتم رفع الملف المرجعي.', 'error'); return; }
+                const updatedData = JSON.parse(JSON.stringify(referenceData));
+                const sessionRecordsMap = new Map();
+                sessionRecords.forEach(r => sessionRecordsMap.set(`${r.governorate}-${r.entityName}`, r));
+                updatedData.forEach(item => {
+                    const key = `${item['المحافظة']}-${item['اسم الجهة']}`;
+                    if (sessionRecordsMap.has(key)) {
+                        const sessionRecord = sessionRecordsMap.get(key);
+                        item['X'] = sessionRecord.x;
+                        item['Y'] = sessionRecord.y;
+                    }
+                });
+                const ws = XLSX.utils.json_to_sheet(updatedData);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Mapped Coordinates");
+                XLSX.writeFile(wb, `mapped_data_${new Date().toISOString().split('T')[0]}.xlsx`);
+                showAlert('تم دمج وتصدير الملف بنجاح!', 'success');
+            };
+
+            const exportSessionRecordsToExcel = () => {
+                if (sessionRecords.length === 0) { showAlert('لا توجد سجلات في الجلسة الحالية لتصديرها.', 'error'); return; }
+                const data = sessionRecords.map(r => ({ 'المحافظة': r.governorate, 'اسم الجهة': r.entityName, 'CRN': r.crn, 'X': r.x, 'Y': r.y, 'Latitude': r.lat, 'Longitude': r.lon, 'ملاحظات': r.comment || '', 'تاريخ الإضافة': r.timestamp })).reverse();
+                const ws = XLSX.utils.json_to_sheet(data);
+                const wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Session Records");
+                XLSX.writeFile(wb, `session_records_${new Date().toISOString().split('T')[0]}.xlsx`);
+                showAlert('تم تصدير سجلات الجلسة بنجاح', 'success');
+            };
+
+            const governorates = useMemo(() => [...new Set(referenceData.map(item => item['المحافظة']))].filter(Boolean), [referenceData]);
+            const entitiesInGovernorate = useMemo(() => selectedGovernorate ? referenceData.filter(item => item['المحافظة'] === selectedGovernorate).map(item => item['اسم الجهة']).filter(Boolean) : [], [referenceData, selectedGovernorate]);
+            const handleGovernorateChange = (ev) => { setSelectedGovernorate(ev.target.value); setSelectedEntity(''); setCrn(''); };
+            const handleEntityChange = (ev) => {
+                const entityName = ev.target.value;
+                setSelectedEntity(entityName);
+                const item = referenceData.find(i => i['المحافظة'] === selectedGovernorate && i['اسم الجهة'] === entityName);
+                if (item) setCrn(item['CRN']);
+            };
+            const handleLinkPaste = (ev) => {
+                const coords = extractCoordinates(ev.clipboardData.getData('text'));
+                if (coords) setQuickResult(wgs84ToUtm(coords.lat, coords.lon));
+            };
+
+            const passwordModal = isPasswordModalOpen && e('div', { className: "fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" },
+                e('div', { className: "bg-white p-8 rounded-lg shadow-xl w-full max-w-sm" },
+                    e('h3', { className: "text-lg font-bold mb-4 text-slate-800" }, "دخول المسؤول"),
+                    e('p', { className: "text-sm text-slate-600 mb-4" }, "الرجاء إدخال كلمة المرور للمتابعة."),
+                    e('form', { onSubmit: handlePasswordSubmit },
+                        e('input', { type: "password", value: passwordInput, onChange: (ev) => setPasswordInput(ev.target.value), className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", autoFocus: true }),
+                        e('div', { className: "mt-6 flex justify-end gap-3" },
+                            e('button', { type: "button", onClick: () => { setIsPasswordModalOpen(false); setPasswordInput(''); }, className: "px-4 py-2 bg-slate-200 text-slate-800 rounded-md hover:bg-slate-300 transition-colors" }, "إلغاء"),
+                            e('button', { type: "submit", className: "px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 transition-colors" }, "دخول")
+                        )
+                    )
+                )
+            );
+            
+            const formElement = e('form', { onSubmit: handleSubmit },
+                e('label', { className: "block text-sm font-medium text-slate-700 mb-2" }, "الخطوة 2: إدخال البيانات الجديدة"),
+                e('div', { className: "space-y-4" },
+                    e('div', null, e('label', { htmlFor: "governorate", className: "block text-sm font-medium text-slate-700 mb-1" }, "المحافظة *"), e('select', { id: "governorate", value: selectedGovernorate, onChange: handleGovernorateChange, className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", required: true }, e('option', { value: "" }, "اختر محافظة..."), governorates.map(g => e('option', { key: g, value: g }, g)))),
+                    e('div', null, e('label', { htmlFor: "entityName", className: "block text-sm font-medium text-slate-700 mb-1" }, "اسم الجهة *"), e('select', { id: "entityName", value: selectedEntity, onChange: handleEntityChange, className: "w-full p-2 border border-slate-300 rounded-md shadow-sm focus:ring-indigo-500 focus:border-indigo-500 bg-white", disabled: !selectedGovernorate, required: true }, e('option', { value: "" }, "اختر جهة..."), entitiesInGovernorate.map(en => e('option', { key: en, value: en }, en)))),
+                    e('div', null, e('label', { htmlFor: "crn", className: "block text-sm font-medium text-slate-700 mb-1" }, "CRN"), e('input', { type: "text", id: "crn", value: crn, className: "w-full p-2 bg-slate-100 border border-slate-300 rounded-md", readOnly: true })),
+                    e('div', null, e('label', { htmlFor: "googleLink", className: "block text-sm font-medium text-slate-700 mb-1" }, "رابط Google Maps *"), e('textarea', { id: "googleLink", value: googleLink, onChange: (ev) => setGoogleLink(ev.target.value), onPaste: handleLinkPaste, rows: 3, className: "w-full p-2 border border-slate-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 bg-white", placeholder: "الصق الرابط هنا...", required: true })),
+                    e('div', null, e('label', { htmlFor: "comment", className: "block text-sm font-medium text-slate-700 mb-1" }, "ملاحظات"), e('textarea', { id: "comment", value: comment, onChange: (ev) => setComment(ev.target.value), rows: 2, className: "w-full p-2 border border-slate-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 bg-white", placeholder: "اختياري..." })),
+                    quickResult && e('div', { className: "p-3 bg-indigo-50 border-l-4 border-indigo-400 text-indigo-800 rounded-md" }, e('p', { className: "font-semibold" }, "✓ تم التحويل:"), e('p', { className: "font-mono text-sm" }, `X = ${quickResult.x}`), e('p', { className: "font-mono text-sm" }, `Y = ${quickResult.y}`))
+                ),
+                e('div', { className: "mt-6 space-y-2" },
+                    e('button', { type: "submit", disabled: !selectedEntity, className: "w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" }, editingIndex !== null ? '💾 تحديث السجل' : '✅ إضافة للقائمة الحالية'),
+                    editingIndex !== null && e('button', { type: "button", onClick: resetForm, className: "w-full bg-slate-500 text-white font-bold py-2 px-4 rounded-md hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500" }, "إلغاء التعديل")
+                )
+            );
+            
+            return e(React.Fragment, null,
+                alert && e('div', { className: "fixed top-5 left-1/2 -translate-x-1/2 z-50" }, e(Alert, { message: alert.message, type: alert.type })),
+                passwordModal,
+                e(Header, { title: "إدخال بيانات حسب المحافظة", recordCount: sessionRecords.length, goBack: goBack }),
+                e('main', { className: "container mx-auto p-4 md:p-6" },
+                    e('div', { className: "grid grid-cols-1 lg:grid-cols-3 gap-6" },
+                        e('div', { id: "data-entry-form", className: "lg:col-span-1 bg-white p-6 rounded-lg shadow-md h-fit sticky top-24" },
+                            e('div', { className: "flex justify-between items-center border-b pb-2 mb-4" },
+                                e('h2', { className: "text-xl font-semibold text-slate-700" }, "لوحة التحكم"),
+                                isAdmin ? e('div', { className: "flex items-center gap-3" }, e('span', { className: "text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-1 rounded-full" }, "وضع المسؤول"), e('button', { onClick: onAdminLogout, className: "text-sm text-rose-600 hover:underline" }, "خروج")) : e('button', { onClick: () => setIsPasswordModalOpen(true), className: "text-sm text-indigo-600 hover:underline" }, "دخول المسؤول")
+                            ),
+                            isAdmin && e('div', { className: "mb-6" },
+                                e('label', { className: "block text-sm font-medium text-slate-700 mb-2" }, "الخطوة 1: رفع الملف المرجعي"),
+                                e('div', { className: "mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-slate-300 border-dashed rounded-md" }, e('div', { className: "space-y-1 text-center" }, e('svg', { className: "mx-auto h-12 w-12 text-slate-400", stroke: "currentColor", fill: "none", viewBox: "0 0 48 48", "aria-hidden": "true" }, e('path', { d: "M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" })), e('div', { className: "flex text-sm text-slate-600" }, e('label', { htmlFor: "file-upload", className: "relative cursor-pointer bg-white rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500" }, e('span', null, fileName ? 'تغيير الملف' : 'اختر ملف إكسل'), e('input', { id: "file-upload", name: "file-upload", type: "file", className: "sr-only", accept: ".xlsx, .xls", onChange: handleFileChange }))), e('p', { className: "text-xs text-slate-500" }, ".xlsx, .xls"))),
+                                fileName && e('p', { className: "text-sm text-emerald-600 mt-2" }, `✓ الملف الحالي: ${fileName}`)
+                            ),
+                            !isAdmin && referenceData.length === 0 && e('div', { className: "p-4 text-center bg-slate-100 rounded-md" }, e('p', { className: "text-slate-600" }, "يجب على مسؤول النظام رفع الملف المرجعي أولاً لبدء إدخال البيانات.")),
+                            referenceData.length > 0 && formElement
+                        ),
+                        e('div', { className: "lg:col-span-2 bg-white p-6 rounded-lg shadow-md" },
+                            e('div', { className: "flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4" },
+                                e('div', null, e('h2', { className: "text-xl font-semibold text-slate-700" }, "السجلات المضافة في هذه الجلسة"), e('p', { className: "text-sm text-slate-500 mt-1" }, "هذه السجلات سيتم دمجها مع الملف المرجعي عند التصدير.")),
+                                e('div', { className: "flex flex-col sm:flex-row gap-2 justify-end w-full sm:w-auto" },
+                                    e('div', null, e('button', { onClick: exportSessionRecordsToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-violet-600 text-white font-bold py-2 px-4 rounded-md hover:bg-violet-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500" }, "📑 تصدير سجلات الجلسة"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يُصدر السجلات الجديدة فقط.")),
+                                    e('div', null, e('button', { onClick: exportMergedToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-emerald-600 text-white font-bold py-2 px-4 rounded-md hover:bg-emerald-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500" }, "📥 تصدير الملف المدمج"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يضيف الإحداثيات للملف الأصلي."))
+                                )
+                            ),
+                            e('div', { className: "overflow-x-auto" },
+                                sessionRecords.length > 0 ? e('table', { className: "w-full text-sm text-right text-slate-500" },
+                                    e('thead', { className: "text-xs text-slate-700 uppercase bg-slate-100" }, e('tr', null, e('th', { className: "px-4 py-3" }, "المحافظة"), e('th', { className: "px-4 py-3" }, "اسم الجهة"), e('th', { className: "px-4 py-3" }, "CRN"), e('th', { className: "px-4 py-3" }, "X"), e('th', { className: "px-4 py-3" }, "Y"), e('th', { className: "px-4 py-3" }, "ملاحظات"), e('th', { className: "px-4 py-3" }, "إجراءات"))),
+                                    e('tbody', null, sessionRecords.map((record, index) => e('tr', { key: index, className: "bg-white border-b border-slate-200 hover:bg-slate-50" }, e('td', { className: "px-4 py-3" }, record.governorate), e('td', { className: "px-4 py-3 font-medium text-slate-900" }, record.entityName), e('td', { className: "px-4 py-3" }, record.crn), e('td', { className: "px-4 py-3 font-mono" }, record.x), e('td', { className: "px-4 py-3 font-mono" }, record.y), e('td', { className: "px-4 py-3 truncate max-w-xs", title: record.comment }, record.comment || '-'), e('td', { className: "px-4 py-3 flex items-center space-x-2" }, e('button', { onClick: () => handleEditSessionRecord(index), className: "text-amber-500 hover:text-amber-700 text-lg" }, "✏️"), e('button', { onClick: () => handleDeleteSessionRecord(index), className: "text-rose-500 hover:text-rose-700 text-lg" }, "🗑️")))))
+                                ) : e(EmptyState, { message: referenceData.length > 0 ? "لم تتم إضافة أي سجلات بعد. استخدم النموذج لإضافة أول سجل." : "يرجى مطالبة المسؤول برفع ملف مرجعي للمتابعة." })
+                            )
+                        )
+                    )
+                )
+            );
+        };
+        
+        // =====================================================================================
+        // --- App.tsx (Main Application Logic) ---
+        // =====================================================================================
+        const App = () => {
+            const { useState } = React;
+            const [page, setPage] = useState('landing');
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [referenceData, setReferenceData] = useState([]);
+            const [fileName, setFileName] = useState('');
+
+            const handleFileLoad = (data, name) => {
+                setReferenceData(data);
+                setFileName(name);
+            };
+
+            const navigate = (newPage) => setPage(newPage);
+            const goBack = () => setPage('landing');
+
+            const renderPage = () => {
+                switch (page) {
+                    case 'data-entry':
+                        return e(DataEntryPage, {
+                            isAdmin,
+                            onAdminLogin: () => setIsAdmin(true),
+                            onAdminLogout: () => setIsAdmin(false),
+                            referenceData,
+                            fileName,
+                            onFileLoad: handleFileLoad,
+                            goBack
+                        });
+                    case 'fast-conversion':
+                        return e(FastConversionPage, { goBack });
+                    case 'landing':
+                    default:
+                        return e(LandingPage, { onNavigate: navigate });
+                }
+            };
+            
+            return e('div', { className: "min-h-screen bg-slate-50 text-slate-800" }, renderPage());
+        };
+
+        // =====================================================================================
+        // --- index.tsx (Root Renderer) ---
+        // =====================================================================================
+        const rootElement = document.getElementById('root');
+        if (rootElement) {
+            const root = ReactDOM.createRoot(rootElement);
+            root.render(e(React.StrictMode, null, e(App)));
+        }
+    </script>
+<script type="module" src="/index.tsx"></script>
+</body>
+</html>
