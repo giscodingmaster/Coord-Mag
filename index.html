@@ -555,12 +555,24 @@
 
             const governorates = useMemo(() => [...new Set(referenceData.map(item => item['المحافظة']))].filter(Boolean), [referenceData]);
             
+            const addedCrnsInGovernorate = useMemo(() => {
+                if (!selectedGovernorate) return new Set();
+                return new Set(
+                    sessionRecords
+                        .filter(record => record.governorate === selectedGovernorate)
+                        .map(record => record.crn)
+                );
+            }, [sessionRecords, selectedGovernorate]);
+
             const entitiesInGovernorate = useMemo(() => {
                 if (!selectedGovernorate) return [];
                 return referenceData
                     .map((item, index) => ({ item, index }))
-                    .filter(({ item }) => item['المحافظة'] === selectedGovernorate);
-            }, [referenceData, selectedGovernorate]);
+                    .filter(({ item }) => 
+                        item['المحافظة'] === selectedGovernorate &&
+                        !addedCrnsInGovernorate.has(item['CRN'])
+                    );
+            }, [referenceData, selectedGovernorate, addedCrnsInGovernorate]);
 
             const handleGovernorateChange = (ev) => {
                 setSelectedGovernorate(ev.target.value);
