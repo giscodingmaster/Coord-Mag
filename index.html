@@ -357,9 +357,9 @@
         // --- components/DataEntryPage.tsx ---
         // =====================================================================================
         const DataEntryPage = ({ isAdmin, onAdminLogin, onAdminLogout, referenceData, fileName, goBack }) => {
-            const { useState, useMemo } = React;
+            const { useState, useMemo, useEffect } = React;
             const [sessionRecords, setSessionRecords] = useState([]);
-            const [editingIndex, setEditingIndex] = useState(null);
+            const [editingId, setEditingId] = useState(null);
             const [selectedGovernorate, setSelectedGovernorate] = useState('');
             const [selectedEntity, setSelectedEntity] = useState('');
             const [selectedEntityIndex, setSelectedEntityIndex] = useState('');
@@ -370,6 +370,31 @@
             const [alert, setAlert] = useState(null);
             const [isPasswordModalOpen, setIsPasswordModalOpen] = useState(false);
             const [passwordInput, setPasswordInput] = useState('');
+            const [isFirebaseReady, setIsFirebaseReady] = useState(false);
+
+            useEffect(() => {
+                if (window.firebase && window.firebase.database) {
+                     setIsFirebaseReady(true);
+                }
+            }, []);
+            
+            useEffect(() => {
+                if (!isFirebaseReady) return;
+                const db = window.firebase.database();
+                const recordsRef = db.ref('dataEntrySessionRecords/');
+                const listener = recordsRef.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    const loadedRecords = [];
+                    if (data) {
+                        for (const key in data) {
+                            loadedRecords.push({ id: key, ...data[key] });
+                        }
+                    }
+                    setSessionRecords(loadedRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+                });
+                return () => recordsRef.off('value', listener);
+            }, [isFirebaseReady]);
+
 
             const showAlert = (message, type) => {
                 setAlert({ message, type });
@@ -404,8 +429,7 @@
                             return;
                         }
 
-                        // Save to Firebase instead of local state
-                        if (window.firebase && window.firebase.database) {
+                        if (isFirebaseReady) {
                             const db = window.firebase.database();
                             const payload = {
                                 fileName: file.name,
@@ -438,39 +462,63 @@
                 setGoogleLink('');
                 setComment('');
                 setQuickResult(null);
-                setEditingIndex(null);
+                setEditingId(null);
                 setSelectedEntityIndex('');
             };
 
-            const handleSubmit = (ev) => {
+            const handleSubmit = async (ev) => {
                 ev.preventDefault();
                 const coords = extractCoordinates(googleLink);
                 if (!coords) { showAlert('رابط Google Maps غير صحيح أو غير مدعوم', 'error'); return; }
+                if (!isFirebaseReady) { showAlert('خدمة قاعدة البيانات غير مهيأة.', 'error'); return; }
                 const utm = wgs84ToUtm(coords.lat, coords.lon);
-                if (editingIndex !== null) {
-                    const updatedRecord = { ...sessionRecords[editingIndex], entityName: selectedEntity, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, updated: new Date().toLocaleString('ar-EG'), governorate: selectedGovernorate };
-                    const updatedRecords = [...sessionRecords];
-                    updatedRecords[editingIndex] = updatedRecord;
-                    setSessionRecords(updatedRecords);
+                const db = window.firebase.database();
+
+                if (editingId) {
+                    const recordToUpdate = sessionRecords.find(r => r.id === editingId);
+                    if (!recordToUpdate) return;
+                    const updatedRecord = { ...recordToUpdate, entityName: selectedEntity, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, updated: new Date().toLocaleString('ar-EG'), governorate: selectedGovernorate };
+                    await db.ref(`dataEntrySessionRecords/${editingId}`).set(updatedRecord);
                     showAlert('تم تحديث السجل بنجاح.', 'success');
                 } else {
                     const newRecord = { entityName: selectedEntity, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, timestamp: new Date().toLocaleString('ar-EG'), governorate: selectedGovernorate };
-                    setSessionRecords(prev => [newRecord, ...prev]);
-                    showAlert('تمت إضافة السجل بنجاح إلى القائمة الحالية.', 'success');
+                    await db.ref('dataEntrySessionRecords').push(newRecord);
+                    showAlert('تمت إضافة السجل بنجاح.', 'success');
                 }
                 resetForm();
             };
 
-            const handleEditSessionRecord = (index) => {
-                const record = sessionRecords[index];
-                setEditingIndex(index); setSelectedGovernorate(record.governorate || ''); setSelectedEntity(record.entityName); setCrn(record.crn); setGoogleLink(`https://www.google.com/maps?q=${record.lat},${record.lon}`); setComment(record.comment); setQuickResult({ x: record.x, y: record.y });
+            const handleEditSessionRecord = (record) => {
+                setEditingId(record.id); 
+                setSelectedGovernorate(record.governorate || ''); 
+                setSelectedEntity(record.entityName); 
+                setCrn(record.crn); 
+                setGoogleLink(`https://www.google.com/maps?q=${record.lat},${record.lon}`); 
+                setComment(record.comment); 
+                setQuickResult({ x: record.x, y: record.y });
+                // We need to find the original index in the referenceData to set the dropdown correctly
+                const refIndex = referenceData.findIndex(item => item['المحافظة'] === record.governorate && item['اسم الجهة'] === record.entityName && item['CRN'] === record.crn);
+                if (refIndex !== -1) {
+                    setSelectedEntityIndex(refIndex.toString());
+                }
                 document.getElementById('data-entry-form')?.scrollIntoView({ behavior: 'smooth' });
             };
 
-            const handleDeleteSessionRecord = (index) => {
-                if (window.confirm('هل أنت متأكد من حذف هذا السجل من الجلسة الحالية؟')) {
-                    setSessionRecords(prev => prev.filter((_, i) => i !== index));
+            const handleDeleteSessionRecord = async (id) => {
+                if (window.confirm('هل أنت متأكد من حذف هذا السجل؟ سيتم حذفه للجميع.')) {
+                    if (!isFirebaseReady) { showAlert('خدمة قاعدة البيانات غير مهيأة.', 'error'); return; }
+                    const db = window.firebase.database();
+                    await db.ref(`dataEntrySessionRecords/${id}`).remove();
                     showAlert('تم حذف السجل.', 'success');
+                }
+            };
+
+            const handleClearSessionRecords = async () => {
+                if (window.confirm('تحذير: سيتم حذف جميع سجلات الجلسة المضافة بشكل نهائي للجميع. هل أنت متأكد؟')) {
+                     if (!isFirebaseReady) { showAlert('خدمة قاعدة البيانات غير مهيأة.', 'error'); return; }
+                    const db = window.firebase.database();
+                    await db.ref('dataEntrySessionRecords').set(null);
+                    showAlert('تم حذف جميع سجلات الجلسة.', 'success');
                 }
             };
             
@@ -478,13 +526,14 @@
                 if (sessionRecords.length === 0 || referenceData.length === 0) { showAlert('لا توجد سجلات جديدة لدمجها أو لم يتم رفع الملف المرجعي.', 'error'); return; }
                 const updatedData = JSON.parse(JSON.stringify(referenceData));
                 const sessionRecordsMap = new Map();
-                sessionRecords.forEach(r => sessionRecordsMap.set(`${r.governorate}-${r.entityName}`, r));
+                sessionRecords.forEach(r => sessionRecordsMap.set(`${r.governorate}-${r.crn}`, r)); // Use CRN for unique key
                 updatedData.forEach(item => {
-                    const key = `${item['المحافظة']}-${item['اسم الجهة']}`;
+                    const key = `${item['المحافظة']}-${item['CRN']}`;
                     if (sessionRecordsMap.has(key)) {
                         const sessionRecord = sessionRecordsMap.get(key);
                         item['X'] = sessionRecord.x;
                         item['Y'] = sessionRecord.y;
+                        item['ملاحظات'] = sessionRecord.comment || '';
                     }
                 });
                 const ws = XLSX.utils.json_to_sheet(updatedData);
@@ -566,8 +615,8 @@
                     quickResult && e('div', { className: "p-3 bg-indigo-50 border-l-4 border-indigo-400 text-indigo-800 rounded-md" }, e('p', { className: "font-semibold" }, "✓ تم التحويل:"), e('p', { className: "font-mono text-sm" }, `X = ${quickResult.x}`), e('p', { className: "font-mono text-sm" }, `Y = ${quickResult.y}`))
                 ),
                 e('div', { className: "mt-6 space-y-2" },
-                    e('button', { type: "submit", disabled: !selectedEntity, className: "w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" }, editingIndex !== null ? '💾 تحديث السجل' : '✅ إضافة للقائمة الحالية'),
-                    editingIndex !== null && e('button', { type: "button", onClick: resetForm, className: "w-full bg-slate-500 text-white font-bold py-2 px-4 rounded-md hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500" }, "إلغاء التعديل")
+                    e('button', { type: "submit", disabled: !selectedEntity, className: "w-full bg-indigo-600 text-white font-bold py-2 px-4 rounded-md hover:bg-indigo-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500" }, editingId ? '💾 تحديث السجل' : '✅ إضافة للقائمة'),
+                    editingId && e('button', { type: "button", onClick: resetForm, className: "w-full bg-slate-500 text-white font-bold py-2 px-4 rounded-md hover:bg-slate-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500" }, "إلغاء التعديل")
                 )
             );
             
@@ -592,16 +641,17 @@
                         ),
                         e('div', { className: "lg:col-span-2 bg-white p-6 rounded-lg shadow-md" },
                             e('div', { className: "flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4" },
-                                e('div', null, e('h2', { className: "text-xl font-semibold text-slate-700" }, "السجلات المضافة في هذه الجلسة"), e('p', { className: "text-sm text-slate-500 mt-1" }, "هذه السجلات سيتم دمجها مع الملف المرجعي عند التصدير.")),
+                                e('div', null, e('h2', { className: "text-xl font-semibold text-slate-700" }, "السجلات المضافة (مشتركة)"), e('p', { className: "text-sm text-slate-500 mt-1" }, "هذه السجلات مرئية لجميع المستخدمين في الوقت الفعلي.")),
                                 e('div', { className: "flex flex-col sm:flex-row gap-2 justify-end w-full sm:w-auto" },
-                                    e('div', null, e('button', { onClick: exportSessionRecordsToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-violet-600 text-white font-bold py-2 px-4 rounded-md hover:bg-violet-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500" }, "📑 تصدير سجلات الجلسة"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يُصدر السجلات الجديدة فقط.")),
-                                    e('div', null, e('button', { onClick: exportMergedToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-emerald-600 text-white font-bold py-2 px-4 rounded-md hover:bg-emerald-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500" }, "📥 تصدير الملف المدمج"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يضيف الإحداثيات للملف الأصلي."))
+                                    e('div', null, e('button', { onClick: exportSessionRecordsToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-violet-600 text-white font-bold py-2 px-4 rounded-md hover:bg-violet-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500" }, "📑 تصدير السجلات الجديدة"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يُصدر السجلات الجديدة فقط.")),
+                                    e('div', null, e('button', { onClick: exportMergedToExcel, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-emerald-600 text-white font-bold py-2 px-4 rounded-md hover:bg-emerald-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500" }, "📥 تصدير الملف المدمج"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يضيف الإحداثيات للملف الأصلي.")),
+                                     isAdmin && e('div', null, e('button', { onClick: handleClearSessionRecords, disabled: sessionRecords.length === 0, className: "w-full sm:w-auto bg-rose-600 text-white font-bold py-2 px-4 rounded-md hover:bg-rose-700 disabled:bg-slate-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500" }, "🗑️ مسح الكل"), e('p', { className: "text-xs text-slate-500 mt-1 text-center sm:text-right" }, "يمسح السجلات الجديدة للكل."))
                                 )
                             ),
                             e('div', { className: "overflow-x-auto" },
                                 sessionRecords.length > 0 ? e('table', { className: "w-full text-sm text-right text-slate-500" },
                                     e('thead', { className: "text-xs text-slate-700 uppercase bg-slate-100" }, e('tr', null, e('th', { className: "px-4 py-3" }, "المحافظة"), e('th', { className: "px-4 py-3" }, "اسم الجهة"), e('th', { className: "px-4 py-3" }, "CRN"), e('th', { className: "px-4 py-3" }, "X"), e('th', { className: "px-4 py-3" }, "Y"), e('th', { className: "px-4 py-3" }, "ملاحظات"), e('th', { className: "px-4 py-3" }, "إجراءات"))),
-                                    e('tbody', null, sessionRecords.map((record, index) => e('tr', { key: index, className: "bg-white border-b border-slate-200 hover:bg-slate-50" }, e('td', { className: "px-4 py-3" }, record.governorate), e('td', { className: "px-4 py-3 font-medium text-slate-900" }, record.entityName), e('td', { className: "px-4 py-3" }, record.crn), e('td', { className: "px-4 py-3 font-mono" }, record.x), e('td', { className: "px-4 py-3 font-mono" }, record.y), e('td', { className: "px-4 py-3 truncate max-w-xs", title: record.comment }, record.comment || '-'), e('td', { className: "px-4 py-3 flex items-center space-x-2" }, e('button', { onClick: () => handleEditSessionRecord(index), className: "text-amber-500 hover:text-amber-700 text-lg" }, "✏️"), e('button', { onClick: () => handleDeleteSessionRecord(index), className: "text-rose-500 hover:text-rose-700 text-lg" }, "🗑️")))))
+                                    e('tbody', null, sessionRecords.map((record) => e('tr', { key: record.id, className: "bg-white border-b border-slate-200 hover:bg-slate-50" }, e('td', { className: "px-4 py-3" }, record.governorate), e('td', { className: "px-4 py-3 font-medium text-slate-900" }, record.entityName), e('td', { className: "px-4 py-3" }, record.crn), e('td', { className: "px-4 py-3 font-mono" }, record.x), e('td', { className: "px-4 py-3 font-mono" }, record.y), e('td', { className: "px-4 py-3 truncate max-w-xs", title: record.comment }, record.comment || '-'), e('td', { className: "px-4 py-3 flex items-center space-x-2" }, e('button', { onClick: () => handleEditSessionRecord(record), className: "text-amber-500 hover:text-amber-700 text-lg" }, "✏️"), e('button', { onClick: () => handleDeleteSessionRecord(record.id), className: "text-rose-500 hover:text-rose-700 text-lg" }, "🗑️")))))
                                 ) : e(EmptyState, { message: referenceData.length > 0 ? "لم تتم إضافة أي سجلات بعد. استخدم النموذج لإضافة أول سجل." : "يرجى مطالبة المسؤول برفع ملف مرجعي للمتابعة." })
                             )
                         )
