@@ -9,9 +9,10 @@
     <!-- XLSX (SheetJS) for Excel file reading -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     
-    <!-- Firebase SDKs (Add your configuration in the script below) -->
+    <!-- Firebase SDKs -->
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-storage-compat.js"></script>
 
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -46,7 +47,7 @@
         const e = React.createElement;
 
         // --- Firebase Configuration ---
-        // IMPORTANT: Replace the placeholder values below with your actual Firebase project configuration.
+        // For Firebase JS SDK v7.20.0 and later, measurementId is optional
         const firebaseConfig = {
             apiKey: "AIzaSyALovL9SKUH2lCgBjHytTvVsBVzAKcfGgs",
             authDomain: "new-app-6b6c5.firebaseapp.com",
@@ -55,12 +56,12 @@
             storageBucket: "new-app-6b6c5.firebasestorage.app",
             messagingSenderId: "458991978058",
             appId: "1:458991978058:web:a6254cc72df7c87e0988b3",
+            measurementId: "G-L73Q2WQ9FV"
         };
         
-        // Initialize Firebase if the config is not just placeholders
-        if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
-            window.firebase.initializeApp(firebaseConfig);
-        }
+        // Initialize Firebase
+        window.firebase.initializeApp(firebaseConfig);
+        
 
         // =====================================================================================
         // --- services/conversion.ts ---
@@ -196,9 +197,9 @@
 
             useEffect(() => {
                 if (!isFirebaseReady) return;
-                const { database, ref, onValue } = window.firebase;
-                const recordsRef = ref(database, 'records/');
-                const unsubscribe = onValue(recordsRef, (snapshot) => {
+                const db = window.firebase.database();
+                const recordsRef = db.ref('records/');
+                const listener = recordsRef.on('value', (snapshot) => {
                     const data = snapshot.val();
                     const loadedRecords = [];
                     if (data) {
@@ -208,7 +209,7 @@
                     }
                     setRecords(loadedRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
                 });
-                return () => unsubscribe();
+                return () => recordsRef.off('value', listener);
             }, [isFirebaseReady]);
 
             const showAlert = (message, type) => {
@@ -235,16 +236,16 @@
                 const coords = extractCoordinates(googleLink);
                 if (!coords) { showAlert('رابط Google Maps غير صحيح أو غير مدعوم', 'error'); return; }
                 const utm = wgs84ToUtm(coords.lat, coords.lon);
-                const { database, ref, push, set } = window.firebase;
+                const db = window.firebase.database();
                 if (editingId) {
                     const recordToUpdate = records.find(r => r.id === editingId);
                     if (!recordToUpdate) return;
                     const updatedRecord = { ...recordToUpdate, entityName, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, updated: new Date().toLocaleString('ar-EG') };
-                    await set(ref(database, `records/${editingId}`), updatedRecord);
+                    await db.ref(`records/${editingId}`).set(updatedRecord);
                     showAlert('تم تحديث السجل بنجاح', 'success');
                 } else {
                     const newRecord = { entityName, crn, x: utm.x, y: utm.y, lat: coords.lat.toFixed(7), lon: coords.lon.toFixed(7), comment, timestamp: new Date().toLocaleString('ar-EG') };
-                    await push(ref(database, 'records'), newRecord);
+                    await db.ref('records').push(newRecord);
                     showAlert('تمت إضافة السجل بنجاح', 'success');
                 }
                 resetForm();
@@ -256,16 +257,16 @@
 
             const handleDelete = async (id) => {
                 if (window.confirm('هل أنت متأكد من حذف هذا السجل؟')) {
-                    const { database, ref, remove } = window.firebase;
-                    await remove(ref(database, `records/${id}`));
+                    const db = window.firebase.database();
+                    await db.ref(`records/${id}`).remove();
                     showAlert('تم حذف السجل', 'success');
                 }
             };
 
             const handleClearAll = async () => {
                 if (window.confirm('تحذير: سيتم حذف جميع السجلات بشكل نهائي. هل أنت متأكد؟')) {
-                    const { database, ref, set } = window.firebase;
-                    await set(ref(database, 'records'), null);
+                    const db = window.firebase.database();
+                    await db.ref('records').set(null);
                     showAlert('تم حذف جميع السجلات', 'success');
                 }
             };
@@ -355,7 +356,7 @@
         // =====================================================================================
         // --- components/DataEntryPage.tsx ---
         // =====================================================================================
-        const DataEntryPage = ({ isAdmin, onAdminLogin, onAdminLogout, referenceData, fileName, onFileLoad, goBack }) => {
+        const DataEntryPage = ({ isAdmin, onAdminLogin, onAdminLogout, referenceData, fileName, goBack }) => {
             const { useState, useMemo } = React;
             const [sessionRecords, setSessionRecords] = useState([]);
             const [editingIndex, setEditingIndex] = useState(null);
@@ -390,6 +391,7 @@
             const handleFileChange = (event) => {
                 const file = event.target.files?.[0];
                 if (!file) return;
+
                 const reader = new FileReader();
                 reader.onload = (e_reader) => {
                     try {
@@ -398,19 +400,36 @@
                         const json = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
                         if (json.length > 0 && !('المحافظة' in json[0] && 'اسم الجهة' in json[0] && 'CRN' in json[0])) {
                             showAlert("الملف المرفوع يجب أن يحتوي على الأعمدة: 'المحافظة', 'اسم الجهة', 'CRN'", 'error');
-                            onFileLoad([], '');
                             return;
                         }
-                        onFileLoad(json, file.name);
-                        showAlert(`تم تحميل ${json.length} سجل مرجعي بنجاح.`, 'success');
+
+                        // Save to Firebase instead of local state
+                        if (window.firebase && window.firebase.database) {
+                            const db = window.firebase.database();
+                            const payload = {
+                                fileName: file.name,
+                                data: json,
+                                uploadedAt: new Date().toISOString()
+                            };
+                            db.ref('masterReference').set(payload)
+                                .then(() => {
+                                    showAlert('تم رفع الملف المرجعي ومشاركته مع جميع المستخدمين بنجاح.', 'success');
+                                })
+                                .catch((error) => {
+                                    showAlert(`فشل رفع الملف المرجعي: ${error.message}`, 'error');
+                                });
+                        } else {
+                            showAlert('خدمة قاعدة البيانات غير مهيأة. يرجى مراجعة الإعدادات.', 'error');
+                        }
+
                     } catch (error) {
                         showAlert('حدث خطأ أثناء قراءة الملف. تأكد من أنه ملف إكسل صالح.', 'error');
-                        onFileLoad([], '');
                     }
                 };
                 reader.readAsArrayBuffer(file);
                 event.target.value = '';
             };
+
 
             const resetForm = () => {
                 setSelectedEntity(''); setCrn(''); setGoogleLink(''); setComment(''); setQuickResult(null); setEditingIndex(null);
@@ -538,7 +557,7 @@
                                 e('div', { className: "mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-slate-300 border-dashed rounded-md" }, e('div', { className: "space-y-1 text-center" }, e('svg', { className: "mx-auto h-12 w-12 text-slate-400", stroke: "currentColor", fill: "none", viewBox: "0 0 48 48", "aria-hidden": "true" }, e('path', { d: "M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round" })), e('div', { className: "flex text-sm text-slate-600" }, e('label', { htmlFor: "file-upload", className: "relative cursor-pointer bg-white rounded-md font-medium text-indigo-600 hover:text-indigo-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-indigo-500" }, e('span', null, fileName ? 'تغيير الملف' : 'اختر ملف إكسل'), e('input', { id: "file-upload", name: "file-upload", type: "file", className: "sr-only", accept: ".xlsx, .xls", onChange: handleFileChange }))), e('p', { className: "text-xs text-slate-500" }, ".xlsx, .xls"))),
                                 fileName && e('p', { className: "text-sm text-emerald-600 mt-2" }, `✓ الملف الحالي: ${fileName}`)
                             ),
-                            !isAdmin && referenceData.length === 0 && e('div', { className: "p-4 text-center bg-slate-100 rounded-md" }, e('p', { className: "text-slate-600" }, "يجب على مسؤول النظام رفع الملف المرجعي أولاً لبدء إدخال البيانات.")),
+                            !isAdmin && referenceData.length === 0 && e('div', { className: "p-4 text-center bg-slate-100 rounded-md" }, e('p', { className: "text-slate-600" }, "يتم الآن تحميل البيانات المرجعية... إذا استمر التحميل، يرجى مطالبة المسؤول برفع الملف.")),
                             referenceData.length > 0 && formElement
                         ),
                         e('div', { className: "lg:col-span-2 bg-white p-6 rounded-lg shadow-md" },
@@ -565,16 +584,38 @@
         // --- App.tsx (Main Application Logic) ---
         // =====================================================================================
         const App = () => {
-            const { useState } = React;
+            const { useState, useEffect } = React;
             const [page, setPage] = useState('landing');
             const [isAdmin, setIsAdmin] = useState(false);
             const [referenceData, setReferenceData] = useState([]);
             const [fileName, setFileName] = useState('');
+            const [isFirebaseReady, setIsFirebaseReady] = useState(false);
 
-            const handleFileLoad = (data, name) => {
-                setReferenceData(data);
-                setFileName(name);
-            };
+            useEffect(() => {
+                if (window.firebase && window.firebase.database) {
+                     setIsFirebaseReady(true);
+                }
+            }, []);
+
+            useEffect(() => {
+                if (!isFirebaseReady) return;
+
+                const db = window.firebase.database();
+                const masterRef = db.ref('masterReference');
+                
+                const listener = masterRef.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    if (data) {
+                        setReferenceData(data.data || []);
+                        setFileName(data.fileName || '');
+                    } else {
+                        setReferenceData([]);
+                        setFileName('');
+                    }
+                });
+
+                return () => masterRef.off('value', listener);
+            }, [isFirebaseReady]);
 
             const navigate = (newPage) => setPage(newPage);
             const goBack = () => setPage('landing');
@@ -588,7 +629,6 @@
                             onAdminLogout: () => setIsAdmin(false),
                             referenceData,
                             fileName,
-                            onFileLoad: handleFileLoad,
                             goBack
                         });
                     case 'fast-conversion':
